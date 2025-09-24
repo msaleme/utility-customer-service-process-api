@@ -1,0 +1,7 @@
+{
+  "name": "utility-customer-service-process-api",
+  "minMuleVersion": "4.9.9",
+  "javaSpecificationVersions": [
+    "17.0.13_11"
+  ]
+}

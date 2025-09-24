@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:netsuite="http://www.mulesoft.org/schema/mule/netsuite"
+  xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+	http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+	http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+	http://www.mulesoft.org/schema/mule/netsuite http://www.mulesoft.org/schema/mule/netsuite/current/mule-netsuite.xsd">
+  
+  <flow name="check-opportunity-won-status">
+    <salesforce:modified-object-listener doc:name="On Modified Salesforce Opportunities" doc:id="a1b2c3d4-e5f6-7g8h-9i0j" config-ref="Salesforce_Config" objectType="Opportunity">
+      <scheduling-strategy>
+        <fixed-frequency />
+      </scheduling-strategy>
+    </salesforce:modified-object-listener>
+    <choice doc:name="Check Opportunity Stage" doc:id="b1c2d3e4-f5g6-7h8i-9j0k">
+      <when expression="#[payload.StageName == &quot;Closed Won&quot;]">
+        <logger level="INFO" doc:name="Opportunity Won" doc:id="c1d2e3f4-g5h6-7i8j-9k0l" message="Opportunity was won." />
+        <ee:transform>
+            <ee:message>
+                <ee:set-payload>
+                    <![CDATA[
+                    %dw 2.0
+                    output application/java
+                    ns ns0 urn:messages.platform.webservices.netsuite.com
+                    ns ns01 urn:core.platform.webservices.netsuite.com
+                    ns ns02 urn:transactions.sales.webservices.netsuite.com
+                    ---
+                    {
+                        record: {
+                            "@xsi:type": "ns02:SalesOrder",
+                            entity: {
+                                "@internalId": payload.records[0].AccountId
+                            },
+                            tranDate: now() as String {format: "yyyy-MM-dd"},
+                            itemList: {
+                                item: payload.records[0].OpportunityLineItems.records map (item) -> {
+                                    item: {
+                                        "@internalId": item.Product2Id,
+                                        quantity: item.Quantity,
+                                        rate: item.UnitPrice
+                                    }
+                                }
+                            },
+                            total: payload.records[0].Amount
+                        }
+                    }
+                    ]]>
+                </ee:set-payload>
+            </ee:message>
+        </ee:transform>
+        <!-- :four: Call NetSuite Add Operation -->
+        <netsuite:add doc:name="Add SO in Netsuite" doc:id="05ffa530-3bfc-441a-9a4d-73931d618299" config-ref="NetSuite_Config" type="SalesOrder"/>
+      </when>
+      <otherwise>
+        <logger level="INFO" doc:name="Opportunity Not Won" doc:id="d1e2f3g4-h5i6-7j8k-9l0" message="Opportunity was not won." />
+      </otherwise>
+    </choice>
+  </flow>
+</mule>

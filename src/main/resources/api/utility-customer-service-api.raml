@@ -1,0 +1,411 @@
+#%RAML 1.0
+title: Utility Customer Service Process API
+version: v1
+baseUri: http://localhost:8081/api/v1
+mediaType: application/json
+
+documentation:
+  - title: Overview
+    content: |
+      A comprehensive process API for utility customer service that integrates Oracle billing,
+      outage management systems, and provides innovative features for utility consumers.
+      Designed for AgentForce integration to provide intelligent customer service.
+
+types:
+  Customer:
+    type: object
+    properties:
+      customerId: string
+      accountNumber: string
+      firstName: string
+      lastName: string
+      email: string
+      phone: string
+      serviceAddress:
+        type: object
+        properties:
+          street: string
+          city: string
+          state: string
+          zipCode: string
+          coordinates:
+            type: object
+            properties:
+              latitude: number
+              longitude: number
+      energyProfile:
+        type: object
+        properties:
+          averageMonthlyUsage: number
+          peakUsageHours: string[]
+          seasonalPattern: string
+          
+  UsageData:
+    type: object
+    properties:
+      customerId: string
+      period:
+        type: object
+        properties:
+          startDate: date-only
+          endDate: date-only
+      usage:
+        type: object
+        properties:
+          totalKwh: number
+          dailyAverage: number
+          peakDemand: number
+          offPeakUsage: number
+          costPerKwh: number
+      comparison:
+        type: object
+        properties:
+          previousPeriod: number
+          neighborhoodAverage: number
+          similarHomes: number
+          
+  BillingInfo:
+    type: object
+    properties:
+      customerId: string
+      currentBill:
+        type: object
+        properties:
+          billId: string
+          amount: number
+          dueDate: date-only
+          periodStart: date-only
+          periodEnd: date-only
+          status: string
+          breakdown:
+            type: object
+            properties:
+              energyCharges: number
+              deliveryCharges: number
+              taxes: number
+              fees: number
+      paymentHistory:
+        type: array
+        items:
+          type: object
+          properties:
+            billId: string
+            amount: number
+            paymentDate: date-only
+            method: string
+            
+  OutageInfo:
+    type: object
+    properties:
+      outageId: string
+      area:
+        type: object
+        properties:
+          description: string
+          coordinates:
+            type: object
+            properties:
+              center:
+                type: object
+                properties:
+                  latitude: number
+                  longitude: number
+              radius: number
+      status: string
+      customersAffected: integer
+      estimatedRestoration: datetime
+      cause: string
+      updates:
+        type: array
+        items:
+          type: object
+          properties:
+            timestamp: datetime
+            message: string
+            
+  PredictiveInsights:
+    type: object
+    properties:
+      customerId: string
+      predictions:
+        type: object
+        properties:
+          nextMonthUsage: number
+          nextMonthCost: number
+          peakUsageDays: date-only[]
+          savingsOpportunities:
+            type: array
+            items:
+              type: object
+              properties:
+                category: string
+                potentialSavings: number
+                recommendation: string
+                difficulty: string
+                
+  SmartRecommendations:
+    type: object
+    properties:
+      customerId: string
+      recommendations:
+        type: array
+        items:
+          type: object
+          properties:
+            type: string
+            title: string
+            description: string
+            potentialSavings: number
+            actionRequired: string
+            priority: string
+            
+/customers:
+  /{customerId}:
+    get:
+      description: Get customer profile and energy information
+      responses:
+        200:
+          body:
+            application/json:
+              type: Customer
+        404:
+          body:
+            application/json:
+              example:
+                message: "Customer not found"
+    
+    /usage:
+      get:
+        description: Get detailed usage data and analytics
+        queryParameters:
+          period:
+            type: string
+            enum: [current, last30days, last90days, lastyear]
+            default: current
+          includeComparison:
+            type: boolean
+            default: true
+        responses:
+          200:
+            body:
+              application/json:
+                type: UsageData
+                
+      /hourly:
+        get:
+          description: Get hourly usage data for detailed analysis
+          queryParameters:
+            startDate: date-only
+            endDate: date-only
+          responses:
+            200:
+              body:
+                application/json:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      timestamp: datetime
+                      usage: number
+                      cost: number
+                      temperature: number?
+                      
+    /billing:
+      get:
+        description: Get current billing information and payment history
+        responses:
+          200:
+            body:
+              application/json:
+                type: BillingInfo
+                
+      /payment-plan:
+        post:
+          description: Set up a payment plan
+          body:
+            application/json:
+              type: object
+              properties:
+                planType: string
+                numberOfPayments: integer
+                preferredDate: integer
+          responses:
+            201:
+              body:
+                application/json:
+                  example:
+                    message: "Payment plan created successfully"
+                    planId: "PP12345"
+                    
+    /insights:
+      get:
+        description: Get predictive insights and usage forecasts
+        responses:
+          200:
+            body:
+              application/json:
+                type: PredictiveInsights
+                
+      /recommendations:
+        get:
+          description: Get personalized energy saving recommendations
+          responses:
+            200:
+              body:
+                application/json:
+                  type: SmartRecommendations
+                  
+    /notifications:
+      get:
+        description: Get notification preferences
+        responses:
+          200:
+            body:
+              application/json:
+                type: object
+                properties:
+                  preferences:
+                    type: object
+                    properties:
+                      billReminders: boolean
+                      outageAlerts: boolean
+                      usageAlerts: boolean
+                      savingsTips: boolean
+                      channels:
+                        type: array
+                        items: string
+      put:
+        description: Update notification preferences
+        body:
+          application/json:
+            type: object
+            properties:
+              billReminders: boolean
+              outageAlerts: boolean
+              usageAlerts: boolean
+              savingsTips: boolean
+              channels:
+                type: array
+                items: string
+        responses:
+          200:
+            body:
+              application/json:
+                example:
+                  message: "Preferences updated successfully"
+
+/outages:
+  get:
+    description: Get current outages in area or affecting customer
+    queryParameters:
+      customerId: string?
+      latitude: number?
+      longitude: number?
+      radius: number?
+    responses:
+      200:
+        body:
+          application/json:
+            type: array
+            items: OutageInfo
+            
+  /{outageId}:
+    get:
+      description: Get detailed information about a specific outage
+      responses:
+        200:
+          body:
+            application/json:
+              type: OutageInfo
+              
+/energy-tips:
+  get:
+    description: Get personalized energy saving tips based on usage patterns
+    queryParameters:
+      customerId: string
+      season: string?
+    responses:
+      200:
+        body:
+          application/json:
+            type: array
+            items:
+              type: object
+              properties:
+                tip: string
+                category: string
+                difficulty: string
+                potentialSavings: string
+                
+/service-requests:
+  post:
+    description: Create a new service request
+    body:
+      application/json:
+        type: object
+        properties:
+          customerId: string
+          type: string
+          description: string
+          priority: string
+          contactPreference: string
+    responses:
+      201:
+        body:
+          application/json:
+            example:
+              requestId: "SR12345"
+              message: "Service request created successfully"
+              estimatedResponse: "24 hours"
+              
+  /{requestId}:
+    get:
+      description: Get service request status
+      responses:
+        200:
+          body:
+            application/json:
+              type: object
+              properties:
+                requestId: string
+                status: string
+                description: string
+                updates:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      timestamp: datetime
+                      status: string
+                      notes: string
+
+/agentforce:
+  /query:
+    post:
+      description: AgentForce query endpoint for natural language processing
+      body:
+        application/json:
+          type: object
+          properties:
+            customerId: string
+            query: string
+            context: object?
+      responses:
+        200:
+          body:
+            application/json:
+              type: object
+              properties:
+                response: string
+                actions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: string
+                      description: string
+                      parameters: object
+                data: object?
+                followUpQuestions:
+                  type: array
+                  items: string

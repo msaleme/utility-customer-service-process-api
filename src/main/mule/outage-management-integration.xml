@@ -1,0 +1,348 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+
+  <!-- Outage Management System HTTP Configuration -->
+  <http:request-config name="outage-management-config" doc:name="HTTP Request configuration">
+    <http:request-connection host="${outage.management.host}" port="${outage.management.port:443}" protocol="HTTPS">
+      <http:request-authentication>
+        <http:request-authentication-providers>
+          <http:basic-authentication username="${outage.management.username}" password="${outage.management.password}" />
+        </http:request-authentication-providers>
+      </http:request-authentication>
+    </http:request-connection>
+  </http:request-config>
+
+  <!-- Get Outage Information Flow -->
+  <flow name="get-outage-information">
+    <logger level="DEBUG" doc:name="Logger" message="Fetching outage information with filters: customerId=#[vars.customerId], location=(#[vars.latitude], #[vars.longitude]), radius=#[vars.radius]" />
+    
+    <choice doc:name="Route by Filter Type">
+      <when expression="#[vars.customerId != null]">
+        <flow-ref doc:name="Get Outages by Customer" name="get-outages-by-customer" />
+      </when>
+      <when expression="#[vars.latitude != null and vars.longitude != null]">
+        <flow-ref doc:name="Get Outages by Location" name="get-outages-by-location" />
+      </when>
+      <otherwise>
+        <flow-ref doc:name="Get All Current Outages" name="get-all-current-outages" />
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- Get Outages by Customer Flow -->
+  <flow name="get-outages-by-customer">
+    <logger level="DEBUG" doc:name="Logger" message="Getting outages for customer: #[vars.customerId]" />
+    
+    <!-- First get customer location from Oracle -->
+    <db:select doc:name="Get Customer Location" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT service_latitude, service_longitude 
+        FROM customers 
+        WHERE customer_id = :customerId
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: vars.customerId}]]]></db:input-parameters>
+    </db:select>
+    
+    <choice doc:name="Check Customer Found">
+      <when expression="#[sizeOf(payload) > 0]">
+        <set-variable value="#[payload[0].service_latitude]" doc:name="Set Customer Latitude" variableName="customerLat" />
+        <set-variable value="#[payload[0].service_longitude]" doc:name="Set Customer Longitude" variableName="customerLon" />
+        
+        <http:request method="GET" doc:name="Get Customer Area Outages" config-ref="outage-management-config" path="/api/v1/outages/area">
+          <http:headers><![CDATA[#[{
+            "X-API-Key": "${outage.management.apiKey}",
+            "Content-Type": "application/json"
+          }]]]></http:headers>
+          <http:query-params><![CDATA[#[{
+            latitude: vars.customerLat,
+            longitude: vars.customerLon,
+            radius: 5,
+            status: "ACTIVE"
+          }]]]></http:query-params>
+        </http:request>
+        
+        <ee:transform doc:name="Transform Customer Outages">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload.outages map {
+  outageId: $.id,
+  area: {
+    description: $.area.description,
+    coordinates: {
+      center: {
+        latitude: $.area.center.lat,
+        longitude: $.area.center.lon
+      },
+      radius: $.area.radius
+    }
+  },
+  status: $.status,
+  customersAffected: $.customers_affected,
+  estimatedRestoration: $.estimated_restoration as DateTime,
+  cause: $.cause,
+  updates: $.updates map {
+    timestamp: $.timestamp as DateTime,
+    message: $.message
+  }
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <ee:transform doc:name="Customer Not Found">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Customer not found",
+  "message": "Unable to find location for customer " ++ vars.customerId
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </otherwise>
+    </choice>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="HTTP:CONNECTIVITY">
+        <ee:transform doc:name="Outage System Unavailable">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Outage management system unavailable",
+  "message": "Unable to retrieve outage information at this time"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Get Outages by Location Flow -->
+  <flow name="get-outages-by-location">
+    <logger level="DEBUG" doc:name="Logger" message="Getting outages for location: (#[vars.latitude], #[vars.longitude]) with radius: #[vars.radius default 10]" />
+    
+    <validation:is-number doc:name="Validate Latitude" value="#[vars.latitude]" message="Invalid latitude value" />
+    <validation:is-number doc:name="Validate Longitude" value="#[vars.longitude]" message="Invalid longitude value" />
+    
+    <http:request method="GET" doc:name="Get Area Outages" config-ref="outage-management-config" path="/api/v1/outages/area">
+      <http:headers><![CDATA[#[{
+        "X-API-Key": "${outage.management.apiKey}",
+        "Content-Type": "application/json"
+      }]]]></http:headers>
+      <http:query-params><![CDATA[#[{
+        latitude: vars.latitude,
+        longitude: vars.longitude,
+        radius: vars.radius default 10,
+        status: "ACTIVE"
+      }]]]></http:query-params>
+    </http:request>
+    
+    <ee:transform doc:name="Transform Location Outages">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload.outages map {
+  outageId: $.id,
+  area: {
+    description: $.area.description,
+    coordinates: {
+      center: {
+        latitude: $.area.center.lat,
+        longitude: $.area.center.lon
+      },
+      radius: $.area.radius
+    }
+  },
+  status: $.status,
+  customersAffected: $.customers_affected,
+  estimatedRestoration: $.estimated_restoration as DateTime,
+  cause: $.cause,
+  updates: $.updates map {
+    timestamp: $.timestamp as DateTime,
+    message: $.message
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Get All Current Outages Flow -->
+  <flow name="get-all-current-outages">
+    <logger level="DEBUG" doc:name="Logger" message="Getting all current outages" />
+    
+    <http:request method="GET" doc:name="Get All Outages" config-ref="outage-management-config" path="/api/v1/outages">
+      <http:headers><![CDATA[#[{
+        "X-API-Key": "${outage.management.apiKey}",
+        "Content-Type": "application/json"
+      }]]]></http:headers>
+      <http:query-params><![CDATA[#[{
+        status: "ACTIVE",
+        limit: 50
+      }]]]></http:query-params>
+    </http:request>
+    
+    <ee:transform doc:name="Transform All Outages">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload.outages map {
+  outageId: $.id,
+  area: {
+    description: $.area.description,
+    coordinates: {
+      center: {
+        latitude: $.area.center.lat,
+        longitude: $.area.center.lon
+      },
+      radius: $.area.radius
+    }
+  },
+  status: $.status,
+  customersAffected: $.customers_affected,
+  estimatedRestoration: $.estimated_restoration as DateTime,
+  cause: $.cause,
+  updates: $.updates map {
+    timestamp: $.timestamp as DateTime,
+    message: $.message
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Get Specific Outage Flow -->
+  <flow name="get-specific-outage">
+    <logger level="DEBUG" doc:name="Logger" message="Getting specific outage: #[attributes.uriParams.outageId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Outage ID" value="#[attributes.uriParams.outageId]" message="Outage ID is required" />
+    
+    <http:request method="GET" doc:name="Get Outage Details" config-ref="outage-management-config" path="/api/v1/outages/{outageId}">
+      <http:headers><![CDATA[#[{
+        "X-API-Key": "${outage.management.apiKey}",
+        "Content-Type": "application/json"
+      }]]]></http:headers>
+      <http:uri-params><![CDATA[#[{outageId: attributes.uriParams.outageId}]]]></http:uri-params>
+    </http:request>
+    
+    <choice doc:name="Check Outage Found">
+      <when expression="#[attributes.statusCode == 200]">
+        <ee:transform doc:name="Transform Outage Details">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outageId: payload.id,
+  area: {
+    description: payload.area.description,
+    coordinates: {
+      center: {
+        latitude: payload.area.center.lat,
+        longitude: payload.area.center.lon
+      },
+      radius: payload.area.radius
+    }
+  },
+  status: payload.status,
+  customersAffected: payload.customers_affected,
+  estimatedRestoration: payload.estimated_restoration as DateTime,
+  cause: payload.cause,
+  updates: payload.updates map {
+    timestamp: $.timestamp as DateTime,
+    message: $.message
+  },
+  crews: payload.crews map {
+    id: $.id,
+    status: $.status,
+    estimatedArrival: $.estimated_arrival as DateTime,
+    location: {
+      latitude: $.location.lat,
+      longitude: $.location.lon
+    }
+  },
+  affectedInfrastructure: payload.infrastructure map {
+    type: $.type,
+    id: $.id,
+    status: $.status
+  }
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <ee:transform doc:name="Outage Not Found">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Outage not found",
+  "message": "Outage with ID " ++ attributes.uriParams.outageId ++ " not found"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </otherwise>
+    </choice>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="HTTP:NOT_FOUND">
+        <ee:transform doc:name="Outage Not Found Error">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Outage not found",
+  "message": "Outage with ID " ++ attributes.uriParams.outageId ++ " not found"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="HTTP:CONNECTIVITY">
+        <ee:transform doc:name="Outage System Error">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Outage management system error",
+  "message": "Unable to retrieve outage information"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+</mule>

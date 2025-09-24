@@ -1,0 +1,160 @@
+# Utility Customer Service Process API Configuration
+# Copy this file to config.properties and update with your values
+
+# Application Configuration
+app.name=utility-customer-service-process-api
+app.version=1.0.0
+mule.env=development
+
+# HTTP Listener Configuration
+http.port=8081
+http.host=0.0.0.0
+
+# Oracle Database Configuration
+oracle.billing.host=your-oracle-host.com
+oracle.billing.port=1521
+oracle.billing.serviceName=your-service-name
+oracle.billing.username=your-username
+oracle.billing.password=your-password
+
+# Connection Pool Settings
+oracle.billing.maxPoolSize=10
+oracle.billing.minPoolSize=2
+oracle.billing.acquireIncrement=1
+oracle.billing.maxIdleTime=300
+
+# Outage Management System Configuration
+outage.management.host=outage-api.utility.com
+outage.management.port=443
+outage.management.baseUrl=https://outage-api.utility.com
+outage.management.apiKey=your-outage-api-key
+outage.management.username=your-outage-username
+outage.management.password=your-outage-password
+outage.management.timeout=30000
+
+# AgentForce Configuration
+agentforce.host=agentforce.salesforce.com
+agentforce.port=443
+agentforce.endpoint=https://agentforce.salesforce.com
+agentforce.apiKey=your-agentforce-api-key
+agentforce.username=your-agentforce-username
+agentforce.password=your-agentforce-password
+agentforce.model=gpt-4
+
+# Analytics and Prediction Service Configuration
+analytics.host=analytics.utility.com
+analytics.port=443
+analytics.prediction.baseUrl=https://analytics.utility.com
+analytics.prediction.apiKey=your-analytics-api-key
+analytics.username=your-analytics-username
+analytics.password=your-analytics-password
+
+# Weather Service Configuration (for predictive analytics)
+weather.service.host=api.openweathermap.org
+weather.service.apiKey=your-weather-api-key
+weather.service.timeout=10000
+
+# Notification Configuration
+notifications.email.provider=sendgrid
+notifications.email.apiKey=your-sendgrid-api-key
+notifications.email.fromAddress=noreply@utility.com
+notifications.email.fromName=Utility Customer Service
+
+notifications.sms.provider=twilio
+notifications.sms.apiKey=your-twilio-api-key
+notifications.sms.accountSid=your-twilio-account-sid
+notifications.sms.authToken=your-twilio-auth-token
+notifications.sms.fromNumber=+1234567890
+
+# Cache Configuration
+cache.enabled=true
+cache.provider=redis
+cache.host=localhost
+cache.port=6379
+cache.password=your-redis-password
+cache.ttl.customer=300
+cache.ttl.usage=60
+cache.ttl.outage=30
+cache.ttl.billing=300
+cache.ttl.weather=1800
+
+# Rate Limiting Configuration
+rate.limiting.enabled=true
+rate.limiting.max=100
+rate.limiting.window=60
+rate.limiting.keyResolver=customer_id
+
+# Security Configuration
+security.encryption.enabled=true
+security.encryption.algorithm=AES256
+security.encryption.key=your-encryption-key
+
+# Monitoring and Logging Configuration
+monitoring.metrics.enabled=true
+monitoring.tracing.enabled=true
+monitoring.health.enabled=true
+
+logging.level=INFO
+logging.level.app=DEBUG
+logging.level.http=WARN
+logging.level.db=INFO
+logging.pattern=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+
+# External Service Timeouts (milliseconds)
+timeout.oracle.connection=10000
+timeout.oracle.query=30000
+timeout.outage.request=15000
+timeout.analytics.request=45000
+timeout.agentforce.request=30000
+
+# Circuit Breaker Configuration
+circuit.breaker.enabled=true
+circuit.breaker.failure.threshold=5
+circuit.breaker.timeout=60000
+circuit.breaker.reset.timeout=300000
+
+# Performance Configuration
+performance.connection.pool.max=20
+performance.connection.pool.min=5
+performance.thread.pool.core=10
+performance.thread.pool.max=50
+performance.queue.capacity=1000
+
+# Feature Flags
+feature.predictive.analytics.enabled=true
+feature.agentforce.integration.enabled=true
+feature.smart.recommendations.enabled=true
+feature.weather.integration.enabled=true
+feature.community.comparisons.enabled=true
+feature.solar.assessment.enabled=true
+
+# Development/Testing Configuration
+dev.mock.services.enabled=false
+dev.sample.data.enabled=true
+test.database.enabled=false
+test.external.services.enabled=false
+
+# CloudHub Deployment Configuration (uncomment for CloudHub)
+# cloudhub.application.name=utility-customer-service-api
+# cloudhub.environment=production
+# cloudhub.region=us-east-1
+# cloudhub.worker.type=Micro
+# cloudhub.workers=2
+# cloudhub.objectstore.v2=true
+
+# Environment Specific Overrides
+# These can be overridden by environment-specific property files
+# For example: application-dev.yaml, application-prod.yaml
+
+# Production Configuration (example)
+# oracle.billing.host=prod-oracle.utility.com
+# outage.management.baseUrl=https://prod-outage.utility.com
+# agentforce.endpoint=https://prod-agentforce.salesforce.com
+# analytics.prediction.baseUrl=https://prod-analytics.utility.com
+# logging.level=WARN
+
+# Development Configuration (example)
+# oracle.billing.host=dev-oracle.utility.com
+# outage.management.baseUrl=https://dev-outage.utility.com
+# dev.mock.services.enabled=true
+# logging.level=DEBUG

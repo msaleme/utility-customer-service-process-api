@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd">
+
+  <!-- HTTP Listener Configuration -->
+  <http:listener-config name="utility-api-httpListenerConfig" doc:name="HTTP Listener config">
+    <http:listener-connection host="0.0.0.0" port="${http.port}" />
+  </http:listener-config>
+
+  <!-- APIKit Configuration -->
+  <apikit:config name="utility-api-config" raml="api/utility-customer-service-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
+
+  <!-- Main API Flow -->
+  <flow name="utility-api-main">
+    <http:listener doc:name="Listener" config-ref="utility-api-httpListenerConfig" path="/api/*"/>
+    <apikit:router config-ref="utility-api-config" />
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:BAD_REQUEST">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Bad Request",
+  "message": error.description default "Invalid request format"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">400</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:NOT_FOUND">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Not Found",
+  "message": "Resource not found"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:METHOD_NOT_ALLOWED">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Method Not Allowed",
+  "message": "Method not allowed for this resource"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">405</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:NOT_ACCEPTABLE">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Not Acceptable",
+  "message": "Content type not acceptable"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">406</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:UNSUPPORTED_MEDIA_TYPE">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Unsupported Media Type",
+  "message": "Media type not supported"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">415</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="APIKIT:NOT_IMPLEMENTED">
+        <ee:transform doc:name="Transform Message">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Not Implemented",
+  "message": "Resource not yet implemented"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">501</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Customer Profile Flow -->
+  <flow name="get:\customers\(customerId):utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting customer profile for: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="get-customer-profile" name="get-customer-profile" />
+  </flow>
+
+  <!-- Usage Data Flow -->
+  <flow name="get:\customers\(customerId)\usage:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting usage data for customer: #[attributes.uriParams.customerId]" />
+    <set-variable value="#[attributes.queryParams.period default 'current']" doc:name="Set Period Variable" variableName="period" />
+    <set-variable value="#[attributes.queryParams.includeComparison default true]" doc:name="Set Include Comparison" variableName="includeComparison" />
+    <flow-ref doc:name="get-usage-data" name="get-usage-data" />
+  </flow>
+
+  <!-- Hourly Usage Data Flow -->
+  <flow name="get:\customers\(customerId)\usage\hourly:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting hourly usage data for customer: #[attributes.uriParams.customerId]" />
+    <set-variable value="#[attributes.queryParams.startDate]" doc:name="Set Start Date" variableName="startDate" />
+    <set-variable value="#[attributes.queryParams.endDate]" doc:name="Set End Date" variableName="endDate" />
+    <flow-ref doc:name="get-hourly-usage-data" name="get-hourly-usage-data" />
+  </flow>
+
+  <!-- Billing Information Flow -->
+  <flow name="get:\customers\(customerId)\billing:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting billing information for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="get-billing-information" name="get-billing-information" />
+  </flow>
+
+  <!-- Payment Plan Setup Flow -->
+  <flow name="post:\customers\(customerId)\billing\payment-plan:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Setting up payment plan for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="setup-payment-plan" name="setup-payment-plan" />
+  </flow>
+
+  <!-- Predictive Insights Flow -->
+  <flow name="get:\customers\(customerId)\insights:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting predictive insights for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="get-predictive-insights" name="get-predictive-insights" />
+  </flow>
+
+  <!-- Smart Recommendations Flow -->
+  <flow name="get:\customers\(customerId)\insights\recommendations:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting smart recommendations for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="get-smart-recommendations" name="get-smart-recommendations" />
+  </flow>
+
+  <!-- Notification Preferences Flow -->
+  <flow name="get:\customers\(customerId)\notifications:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting notification preferences for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="get-notification-preferences" name="get-notification-preferences" />
+  </flow>
+
+  <flow name="put:\customers\(customerId)\notifications:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Updating notification preferences for customer: #[attributes.uriParams.customerId]" />
+    <flow-ref doc:name="update-notification-preferences" name="update-notification-preferences" />
+  </flow>
+
+  <!-- Outage Information Flows -->
+  <flow name="get:\outages:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting outage information" />
+    <set-variable value="#[attributes.queryParams.customerId]" doc:name="Set Customer ID" variableName="customerId" />
+    <set-variable value="#[attributes.queryParams.latitude]" doc:name="Set Latitude" variableName="latitude" />
+    <set-variable value="#[attributes.queryParams.longitude]" doc:name="Set Longitude" variableName="longitude" />
+    <set-variable value="#[attributes.queryParams.radius]" doc:name="Set Radius" variableName="radius" />
+    <flow-ref doc:name="get-outage-information" name="get-outage-information" />
+  </flow>
+
+  <flow name="get:\outages\(outageId):utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting specific outage information: #[attributes.uriParams.outageId]" />
+    <flow-ref doc:name="get-specific-outage" name="get-specific-outage" />
+  </flow>
+
+  <!-- Energy Tips Flow -->
+  <flow name="get:\energy-tips:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting energy saving tips" />
+    <set-variable value="#[attributes.queryParams.customerId]" doc:name="Set Customer ID" variableName="customerId" />
+    <set-variable value="#[attributes.queryParams.season]" doc:name="Set Season" variableName="season" />
+    <flow-ref doc:name="get-energy-tips" name="get-energy-tips" />
+  </flow>
+
+  <!-- Service Request Flows -->
+  <flow name="post:\service-requests:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Creating service request" />
+    <flow-ref doc:name="create-service-request" name="create-service-request" />
+  </flow>
+
+  <flow name="get:\service-requests\(requestId):utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Getting service request status: #[attributes.uriParams.requestId]" />
+    <flow-ref doc:name="get-service-request-status" name="get-service-request-status" />
+  </flow>
+
+  <!-- AgentForce Integration Flow -->
+  <flow name="post:\agentforce\query:utility-api-config">
+    <logger level="INFO" doc:name="Logger" message="Processing AgentForce query" />
+    <flow-ref doc:name="process-agentforce-query" name="process-agentforce-query" />
+  </flow>
+
+</mule>

@@ -1,0 +1,730 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+
+  <!-- AgentForce HTTP Configuration -->
+  <http:request-config name="agentforce-config" doc:name="HTTP Request configuration">
+    <http:request-connection host="${agentforce.host}" port="${agentforce.port:443}" protocol="HTTPS">
+      <http:request-authentication>
+        <http:request-authentication-providers>
+          <http:basic-authentication username="${agentforce.username}" password="${agentforce.password}" />
+        </http:request-authentication-providers>
+      </http:request-authentication>
+    </http:request-connection>
+  </http:request-config>
+
+  <!-- Process AgentForce Query Flow -->
+  <flow name="process-agentforce-query">
+    <logger level="DEBUG" doc:name="Logger" message="Processing AgentForce query for customer: #[payload.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Customer ID" value="#[payload.customerId]" message="Customer ID is required" />
+    <validation:is-not-empty-string doc:name="Validate Query" value="#[payload.query]" message="Query is required" />
+    
+    <set-variable value="#[payload.customerId]" doc:name="Set Customer ID" variableName="customerId" />
+    <set-variable value="#[payload.query]" doc:name="Set Query" variableName="query" />
+    <set-variable value="#[payload.context default {}]" doc:name="Set Context" variableName="context" />
+    
+    <!-- Analyze Query Intent -->
+    <flow-ref doc:name="Analyze Query Intent" name="analyze-query-intent" />
+    
+    <!-- Route Based on Intent -->
+    <choice doc:name="Route by Intent">
+      <when expression="#[vars.intent.category == 'billing']">
+        <flow-ref doc:name="Handle Billing Query" name="handle-billing-query" />
+      </when>
+      <when expression="#[vars.intent.category == 'usage']">
+        <flow-ref doc:name="Handle Usage Query" name="handle-usage-query" />
+      </when>
+      <when expression="#[vars.intent.category == 'outage']">
+        <flow-ref doc:name="Handle Outage Query" name="handle-outage-query" />
+      </when>
+      <when expression="#[vars.intent.category == 'efficiency']">
+        <flow-ref doc:name="Handle Efficiency Query" name="handle-efficiency-query" />
+      </when>
+      <when expression="#[vars.intent.category == 'service']">
+        <flow-ref doc:name="Handle Service Query" name="handle-service-query" />
+      </when>
+      <otherwise>
+        <flow-ref doc:name="Handle General Query" name="handle-general-query" />
+      </otherwise>
+    </choice>
+    
+    <!-- Generate Natural Language Response -->
+    <flow-ref doc:name="Generate Response" name="generate-natural-language-response" />
+  </flow>
+
+  <!-- Analyze Query Intent Sub-flow -->
+  <flow name="analyze-query-intent">
+    <logger level="DEBUG" doc:name="Logger" message="Analyzing intent for query: #[vars.query]" />
+    
+    <ee:transform doc:name="Prepare Intent Analysis">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  text: vars.query,
+  customerId: vars.customerId,
+  context: vars.context
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <!-- For demo purposes, using rule-based intent classification -->
+    <!-- In production, this would call a trained NLP model -->
+    <ee:transform doc:name="Classify Intent">
+      <ee:variables>
+        <ee:set-variable variableName="intent"><![CDATA[%dw 2.0
+output application/java
+import * from dw::core::Strings
+
+fun classifyIntent(query) = 
+  query as String toLowerCase() match {
+    case q if (q contains "bill" or q contains "payment" or q contains "cost" or q contains "charge") -> {
+      category: "billing",
+      confidence: 0.9,
+      entities: extractBillingEntities(q)
+    }
+    case q if (q contains "usage" or q contains "consumption" or q contains "kwh" or q contains "energy") -> {
+      category: "usage", 
+      confidence: 0.85,
+      entities: extractUsageEntities(q)
+    }
+    case q if (q contains "outage" or q contains "power out" or q contains "blackout" or q contains "restoration") -> {
+      category: "outage",
+      confidence: 0.95,
+      entities: extractOutageEntities(q)
+    }
+    case q if (q contains "save" or q contains "efficient" or q contains "reduce" or q contains "tips") -> {
+      category: "efficiency",
+      confidence: 0.8,
+      entities: extractEfficiencyEntities(q)
+    }
+    case q if (q contains "service" or q contains "request" or q contains "appointment" or q contains "technician") -> {
+      category: "service",
+      confidence: 0.85,
+      entities: extractServiceEntities(q)
+    }
+    else -> {
+      category: "general",
+      confidence: 0.6,
+      entities: {}
+    }
+  }
+
+fun extractBillingEntities(query) = {
+  period: if (query contains "last month" or query contains "previous") "last_month"
+         else if (query contains "current" or query contains "this month") "current"
+         else null,
+  amount: if (query contains "how much" or query contains "total") true else false
+}
+
+fun extractUsageEntities(query) = {
+  period: if (query contains "yesterday") "yesterday"
+         else if (query contains "last week") "last_week" 
+         else if (query contains "last month") "last_month"
+         else "current",
+  comparison: query contains "compare" or query contains "vs" or query contains "difference"
+}
+
+fun extractOutageEntities(query) = {
+  location: if (query contains "my area" or query contains "neighborhood") "customer_area" else null,
+  status: if (query contains "when" or query contains "estimate") "restoration_time" else null
+}
+
+fun extractEfficiencyEntities(query) = {
+  focus: if (query contains "heating" or query contains "cooling" or query contains "hvac") "hvac"
+        else if (query contains "appliance") "appliances"
+        else if (query contains "solar") "solar"
+        else "general"
+}
+
+fun extractServiceEntities(query) = {
+  type: if (query contains "repair" or query contains "fix") "repair"
+       else if (query contains "install") "installation" 
+       else if (query contains "maintenance") "maintenance"
+       else "general"
+}
+
+---
+classifyIntent(vars.query)]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle Billing Query Sub-flow -->
+  <flow name="handle-billing-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling billing query for customer: #[vars.customerId]" />
+    
+    <flow-ref doc:name="Get Billing Information" name="get-billing-information" />
+    <set-variable value="#[payload]" doc:name="Store Billing Data" variableName="billingData" />
+    
+    <ee:transform doc:name="Format Billing Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "billing",
+  data: vars.billingData,
+  actions: [
+    {
+      type: "view_bill_details",
+      description: "View detailed bill breakdown",
+      parameters: {
+        billId: vars.billingData.currentBill.billId
+      }
+    },
+    {
+      type: "setup_payment_plan", 
+      description: "Set up a payment plan",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "payment_history",
+      description: "View payment history", 
+      parameters: {
+        customerId: vars.customerId
+      }
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle Usage Query Sub-flow -->
+  <flow name="handle-usage-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling usage query for customer: #[vars.customerId]" />
+    
+    <set-variable value="#[vars.intent.entities.period default 'current']" doc:name="Set Period" variableName="period" />
+    <set-variable value="#[vars.intent.entities.comparison default true]" doc:name="Set Include Comparison" variableName="includeComparison" />
+    
+    <flow-ref doc:name="Get Usage Data" name="get-usage-data" />
+    <set-variable value="#[payload]" doc:name="Store Usage Data" variableName="usageData" />
+    
+    <ee:transform doc:name="Format Usage Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "usage",
+  data: vars.usageData,
+  actions: [
+    {
+      type: "view_hourly_usage",
+      description: "View detailed hourly usage",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "get_efficiency_tips",
+      description: "Get personalized efficiency recommendations",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "compare_usage",
+      description: "Compare with neighbors",
+      parameters: {
+        customerId: vars.customerId
+      }
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle Outage Query Sub-flow -->
+  <flow name="handle-outage-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling outage query for customer: #[vars.customerId]" />
+    
+    <set-variable value="#[vars.customerId]" doc:name="Set Customer ID Variable" variableName="customerId" />
+    <flow-ref doc:name="Get Outage Information" name="get-outage-information" />
+    <set-variable value="#[payload]" doc:name="Store Outage Data" variableName="outageData" />
+    
+    <ee:transform doc:name="Format Outage Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "outage", 
+  data: vars.outageData,
+  actions: [
+    {
+      type: "report_outage",
+      description: "Report a new outage",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "outage_updates",
+      description: "Get outage updates",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "preparation_tips",
+      description: "Get outage preparation tips",
+      parameters: {}
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle Efficiency Query Sub-flow -->
+  <flow name="handle-efficiency-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling efficiency query for customer: #[vars.customerId]" />
+    
+    <flow-ref doc:name="Get Smart Recommendations" name="get-smart-recommendations" />
+    <set-variable value="#[payload]" doc:name="Store Recommendations" variableName="recommendationsData" />
+    
+    <flow-ref doc:name="Get Energy Tips" name="get-energy-tips" />
+    <set-variable value="#[payload]" doc:name="Store Energy Tips" variableName="tipsData" />
+    
+    <ee:transform doc:name="Format Efficiency Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "efficiency",
+  data: {
+    recommendations: vars.recommendationsData,
+    tips: vars.tipsData
+  },
+  actions: [
+    {
+      type: "schedule_energy_audit",
+      description: "Schedule a home energy audit",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "solar_assessment",
+      description: "Get solar installation assessment",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "rebate_programs",
+      description: "Find available rebate programs",
+      parameters: {
+        customerId: vars.customerId
+      }
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle Service Query Sub-flow -->
+  <flow name="handle-service-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling service query for customer: #[vars.customerId]" />
+    
+    <ee:transform doc:name="Format Service Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "service",
+  data: {
+    availableServices: [
+      "Electrical repairs",
+      "Meter installation/replacement", 
+      "Tree trimming near power lines",
+      "Home energy audit",
+      "Solar consultation"
+    ]
+  },
+  actions: [
+    {
+      type: "create_service_request",
+      description: "Create a new service request",
+      parameters: {
+        customerId: vars.customerId,
+        type: vars.intent.entities.type default "general"
+      }
+    },
+    {
+      type: "track_service_request",
+      description: "Track existing service requests",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "schedule_appointment",
+      description: "Schedule an appointment",
+      parameters: {
+        customerId: vars.customerId
+      }
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Handle General Query Sub-flow -->
+  <flow name="handle-general-query">
+    <logger level="DEBUG" doc:name="Logger" message="Handling general query for customer: #[vars.customerId]" />
+    
+    <ee:transform doc:name="Format General Response">
+      <ee:variables>
+        <ee:set-variable variableName="responseData"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  type: "general",
+  data: {
+    helpTopics: [
+      "View your bill and usage",
+      "Report or check outages",
+      "Get energy saving tips",
+      "Request service or repairs",
+      "Set up payment plans"
+    ]
+  },
+  actions: [
+    {
+      type: "account_overview",
+      description: "View account overview",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "contact_support",
+      description: "Contact customer support",
+      parameters: {
+        customerId: vars.customerId
+      }
+    },
+    {
+      type: "faq",
+      description: "Browse frequently asked questions",
+      parameters: {}
+    }
+  ]
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </flow>
+
+  <!-- Generate Natural Language Response -->
+  <flow name="generate-natural-language-response">
+    <logger level="DEBUG" doc:name="Logger" message="Generating natural language response for intent: #[vars.intent.category]" />
+    
+    <ee:transform doc:name="Prepare Response Generation">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  query: vars.query,
+  intent: vars.intent,
+  responseData: vars.responseData,
+  customerId: vars.customerId
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <http:request method="POST" doc:name="Generate Response" config-ref="agentforce-config" path="/api/v1/generate">
+      <http:headers><![CDATA[#[{
+        "X-API-Key": "${agentforce.apiKey}",
+        "Content-Type": "application/json"
+      }]]]></http:headers>
+    </http:request>
+    
+    <ee:transform doc:name="Format Final Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  response: payload.response,
+  actions: vars.responseData.actions,
+  data: vars.responseData.data,
+  followUpQuestions: payload.followUpQuestions default [
+    "Would you like to see more details?",
+    "Is there anything else I can help you with?",
+    "Would you like to set up notifications for updates?"
+  ]
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="HTTP:CONNECTIVITY">
+        <!-- Fallback to template-based response if AgentForce is unavailable -->
+        <ee:transform doc:name="Fallback Response">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+
+fun generateFallbackResponse(intent, responseData) = 
+  intent.category match {
+    case "billing" -> "I found your billing information. Your current bill is $" ++ responseData.data.currentBill.amount ++ " and is due on " ++ responseData.data.currentBill.dueDate ++ "."
+    case "usage" -> "Your energy usage for the selected period is " ++ responseData.data.usage.totalKwh ++ " kWh with a daily average of " ++ responseData.data.usage.dailyAverage ++ " kWh."
+    case "outage" -> if (sizeOf(responseData.data) > 0) "I found " ++ sizeOf(responseData.data) ++ " active outage(s) in your area." else "There are no active outages affecting your area."
+    case "efficiency" -> "I have personalized energy saving recommendations for you that could save you up to $" ++ responseData.data.recommendations.insights.totalPotentialSavings ++ " annually."
+    case "service" -> "I can help you with various service requests including repairs, installations, and maintenance. What type of service do you need?"
+    else -> "I'm here to help with your utility account. You can ask me about your bill, energy usage, outages, or request services."
+  }
+  
+---
+{
+  response: generateFallbackResponse(vars.intent, vars.responseData),
+  actions: vars.responseData.actions,
+  data: vars.responseData.data,
+  followUpQuestions: [
+    "Would you like to see more details?",
+    "Is there anything else I can help you with?"
+  ]
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Service Request Management Flows -->
+  <flow name="create-service-request">
+    <logger level="DEBUG" doc:name="Logger" message="Creating service request for customer: #[payload.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Customer ID" value="#[payload.customerId]" message="Customer ID is required" />
+    <validation:is-not-empty-string doc:name="Validate Request Type" value="#[payload.type]" message="Request type is required" />
+    
+    <ee:transform doc:name="Generate Request ID">
+      <ee:variables>
+        <ee:set-variable variableName="requestId"><![CDATA[%dw 2.0
+output application/java
+---
+"SR" ++ (randomInt(99999) + 10000)]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+    
+    <db:insert doc:name="Insert Service Request" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        INSERT INTO service_requests (
+          request_id, customer_id, request_type, description, 
+          priority, contact_preference, created_date, status
+        ) VALUES (
+          :requestId, :customerId, :requestType, :description,
+          :priority, :contactPreference, SYSDATE, 'SUBMITTED'
+        )
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        requestId: vars.requestId,
+        customerId: payload.customerId,
+        requestType: payload.type,
+        description: payload.description,
+        priority: payload.priority default "NORMAL",
+        contactPreference: payload.contactPreference default "EMAIL"
+      }]]]></db:input-parameters>
+    </db:insert>
+    
+    <ee:transform doc:name="Service Request Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  requestId: vars.requestId,
+  message: "Service request created successfully",
+  estimatedResponse: "24 hours",
+  status: "SUBMITTED"
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <flow name="get-service-request-status">
+    <logger level="DEBUG" doc:name="Logger" message="Getting service request status: #[attributes.uriParams.requestId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Request ID" value="#[attributes.uriParams.requestId]" message="Request ID is required" />
+    
+    <db:select doc:name="Get Request Status" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          sr.request_id,
+          sr.status,
+          sr.description,
+          sr.created_date,
+          sr.estimated_completion,
+          su.update_date,
+          su.status as update_status,
+          su.notes
+        FROM service_requests sr
+        LEFT JOIN service_updates su ON sr.request_id = su.request_id
+        WHERE sr.request_id = :requestId
+        ORDER BY su.update_date DESC
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{requestId: attributes.uriParams.requestId}]]]></db:input-parameters>
+    </db:select>
+    
+    <choice doc:name="Check if request exists">
+      <when expression="#[sizeOf(payload) > 0]">
+        <ee:transform doc:name="Transform Request Status">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  requestId: payload[0].request_id,
+  status: payload[0].status,
+  description: payload[0].description,
+  createdDate: payload[0].created_date as Date,
+  estimatedCompletion: payload[0].estimated_completion as Date,
+  updates: payload filter ($.update_date != null) map {
+    timestamp: $.update_date as DateTime,
+    status: $.update_status,
+    notes: $.notes
+  }
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <ee:transform doc:name="Request Not Found">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Service request not found",
+  "message": "Service request with ID " ++ attributes.uriParams.requestId ++ " not found"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- Notification Preferences Management -->
+  <flow name="get-notification-preferences">
+    <logger level="DEBUG" doc:name="Logger" message="Getting notification preferences for customer: #[attributes.uriParams.customerId]" />
+    
+    <db:select doc:name="Get Preferences" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          bill_reminders,
+          outage_alerts,
+          usage_alerts,
+          savings_tips,
+          email_enabled,
+          sms_enabled,
+          push_enabled
+        FROM notification_preferences
+        WHERE customer_id = :customerId
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    
+    <ee:transform doc:name="Transform Preferences">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  preferences: if (sizeOf(payload) > 0) {
+    billReminders: payload[0].bill_reminders as Boolean,
+    outageAlerts: payload[0].outage_alerts as Boolean,
+    usageAlerts: payload[0].usage_alerts as Boolean,
+    savingsTips: payload[0].savings_tips as Boolean,
+    channels: ([] 
+      ++ (if (payload[0].email_enabled as Boolean) ["email"] else [])
+      ++ (if (payload[0].sms_enabled as Boolean) ["sms"] else [])
+      ++ (if (payload[0].push_enabled as Boolean) ["push"] else [])
+    )
+  } else {
+    billReminders: true,
+    outageAlerts: true,
+    usageAlerts: false,
+    savingsTips: true,
+    channels: ["email"]
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <flow name="update-notification-preferences">
+    <logger level="DEBUG" doc:name="Logger" message="Updating notification preferences for customer: #[attributes.uriParams.customerId]" />
+    
+    <db:update doc:name="Update Preferences" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        MERGE INTO notification_preferences np
+        USING (SELECT :customerId as customer_id FROM dual) src
+        ON (np.customer_id = src.customer_id)
+        WHEN MATCHED THEN
+          UPDATE SET 
+            bill_reminders = :billReminders,
+            outage_alerts = :outageAlerts,
+            usage_alerts = :usageAlerts,
+            savings_tips = :savingsTips,
+            email_enabled = :emailEnabled,
+            sms_enabled = :smsEnabled,
+            push_enabled = :pushEnabled,
+            updated_date = SYSDATE
+        WHEN NOT MATCHED THEN
+          INSERT (customer_id, bill_reminders, outage_alerts, usage_alerts, savings_tips, 
+                  email_enabled, sms_enabled, push_enabled, created_date)
+          VALUES (:customerId, :billReminders, :outageAlerts, :usageAlerts, :savingsTips,
+                  :emailEnabled, :smsEnabled, :pushEnabled, SYSDATE)
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        customerId: attributes.uriParams.customerId,
+        billReminders: payload.billReminders,
+        outageAlerts: payload.outageAlerts,
+        usageAlerts: payload.usageAlerts,
+        savingsTips: payload.savingsTips,
+        emailEnabled: payload.channels contains "email",
+        smsEnabled: payload.channels contains "sms", 
+        pushEnabled: payload.channels contains "push"
+      }]]]></db:input-parameters>
+    </db:update>
+    
+    <ee:transform doc:name="Preferences Updated Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  message: "Preferences updated successfully",
+  customerId: attributes.uriParams.customerId
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+</mule>

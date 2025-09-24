@@ -1,0 +1,189 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      oracle:
+        image: gvenzl/oracle-xe:21-slim
+        env:
+          ORACLE_PASSWORD: oracle
+        options: >-
+          --health-cmd "sqlplus -s system/oracle@//localhost:1521/XE @healthcheck.sql"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 1521:1521
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Cache Maven packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-m2
+        
+    - name: Setup Test Database
+      run: |
+        # Wait for Oracle to be ready
+        timeout 300 bash -c 'until nc -z localhost 1521; do sleep 5; done'
+        # Run database setup
+        sqlplus system/oracle@//localhost:1521/XE @database-schema.sql
+        
+    - name: Run Tests
+      run: mvn clean test
+      env:
+        ORACLE_HOST: localhost
+        ORACLE_PORT: 1521
+        ORACLE_SERVICE: XE
+        ORACLE_USER: system
+        ORACLE_PASSWORD: oracle
+        
+    - name: Run Integration Tests
+      run: mvn verify -Dtest.env=integration
+      env:
+        ORACLE_HOST: localhost
+        ORACLE_PORT: 1521
+        ORACLE_SERVICE: XE
+        ORACLE_USER: system
+        ORACLE_PASSWORD: oracle
+        
+    - name: Generate Test Report
+      uses: dorny/test-reporter@v1
+      if: success() || failure()
+      with:
+        name: Maven Tests
+        path: target/surefire-reports/*.xml
+        reporter: java-junit
+        
+    - name: Upload Coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: target/site/jacoco/jacoco.xml
+        
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run OWASP Dependency Check
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: 'utility-customer-service-api'
+        path: '.'
+        format: 'HTML'
+        
+    - name: Upload Dependency Check Results
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-check-report
+        path: reports/
+        
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        
+  build:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Build Application
+      run: mvn clean package
+      
+    - name: Build Docker Image
+      run: |
+        docker build -t utility-customer-service-api:${{ github.sha }} .
+        docker tag utility-customer-service-api:${{ github.sha }} utility-customer-service-api:latest
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: mule-application
+        path: target/*.jar
+        
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to CloudHub Dev
+      run: |
+        mvn clean package deploy -DmuleDeploy \
+          -Dcloudhub.application.name=utility-api-dev \
+          -Dcloudhub.environment=development \
+          -Dcloudhub.worker.type=Micro \
+          -Dcloudhub.workers=1 \
+          -Dcloudhub.username=${{ secrets.ANYPOINT_USERNAME }} \
+          -Dcloudhub.password=${{ secrets.ANYPOINT_PASSWORD }}
+          
+  deploy-prod:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Deploy to CloudHub Production
+      run: |
+        mvn clean package deploy -DmuleDeploy \
+          -Dcloudhub.application.name=utility-api-prod \
+          -Dcloudhub.environment=production \
+          -Dcloudhub.worker.type=Small \
+          -Dcloudhub.workers=2 \
+          -Dcloudhub.username=${{ secrets.ANYPOINT_USERNAME }} \
+          -Dcloudhub.password=${{ secrets.ANYPOINT_PASSWORD }}
+          
+  notification:
+    needs: [deploy-dev, deploy-prod]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify Slack
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      if: always()

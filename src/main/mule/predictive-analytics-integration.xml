@@ -1,0 +1,553 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+
+  <!-- Analytics Service HTTP Configuration -->
+  <http:request-config name="analytics-service-config" doc:name="HTTP Request configuration">
+    <http:request-connection host="${analytics.host}" port="${analytics.port:443}" protocol="HTTPS">
+      <http:request-authentication>
+        <http:request-authentication-providers>
+          <http:basic-authentication username="${analytics.username}" password="${analytics.password}" />
+        </http:request-authentication-providers>
+      </http:request-authentication>
+    </http:request-connection>
+  </http:request-config>
+
+  <!-- Get Predictive Insights Flow -->
+  <flow name="get-predictive-insights">
+    <logger level="DEBUG" doc:name="Logger" message="Generating predictive insights for customer: #[attributes.uriParams.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Customer ID" value="#[attributes.uriParams.customerId]" message="Customer ID is required" />
+    
+    <!-- Get Historical Usage Data -->
+    <db:select doc:name="Get Historical Usage" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          u.usage_date,
+          u.kwh_used,
+          u.cost,
+          u.peak_demand,
+          u.temperature,
+          u.day_of_week,
+          u.month,
+          u.season,
+          c.home_type,
+          c.home_size_sqft,
+          c.occupancy_count
+        FROM usage_data u
+        JOIN customers c ON u.customer_id = c.customer_id
+        WHERE u.customer_id = :customerId
+        AND u.usage_date >= TRUNC(SYSDATE) - 365
+        ORDER BY u.usage_date
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    <set-variable value="#[payload]" doc:name="Store Historical Data" variableName="historicalData" />
+    
+    <!-- Call ML Prediction Service -->
+    <ee:transform doc:name="Prepare ML Request">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  customerId: attributes.uriParams.customerId,
+  features: {
+    historicalUsage: vars.historicalData map {
+      date: $.usage_date as String,
+      kwh: $.kwh_used,
+      cost: $.cost,
+      peakDemand: $.peak_demand,
+      temperature: $.temperature,
+      dayOfWeek: $.day_of_week,
+      month: $.month,
+      season: $.season
+    },
+    customerProfile: {
+      homeType: vars.historicalData[0].home_type,
+      homeSizeSqft: vars.historicalData[0].home_size_sqft,
+      occupancyCount: vars.historicalData[0].occupancy_count
+    }
+  },
+  predictionTypes: ["usage", "cost", "peak_usage_days", "savings_opportunities"]
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <http:request method="POST" doc:name="Call ML Prediction Service" config-ref="analytics-service-config" path="/api/v1/predict">
+      <http:headers><![CDATA[#[{
+        "X-API-Key": "${analytics.apiKey}",
+        "Content-Type": "application/json"
+      }]]]></http:headers>
+    </http:request>
+    <set-variable value="#[payload]" doc:name="Store ML Results" variableName="mlResults" />
+    
+    <!-- Get Weather Forecast for Enhanced Predictions -->
+    <http:request method="GET" doc:name="Get Weather Forecast" config-ref="weather-service-config" path="/api/v1/forecast">
+      <http:query-params><![CDATA[#[{
+        latitude: vars.historicalData[0].service_latitude,
+        longitude: vars.historicalData[0].service_longitude,
+        days: 30
+      }]]]></http:query-params>
+    </http:request>
+    <set-variable value="#[payload]" doc:name="Store Weather Data" variableName="weatherForecast" />
+    
+    <!-- Generate Smart Insights -->
+    <ee:transform doc:name="Generate Predictive Insights">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+import * from dw::core::Arrays
+
+fun calculateWeatherImpact(forecastTemp, historicalData) = 
+  historicalData filter ($.temperature > (forecastTemp + 5) or $.temperature < (forecastTemp - 5))
+  then avg($.kwh_used) - avg(historicalData.kwh_used)
+  else 0
+
+fun identifyPeakDays(forecast, predictions) = 
+  forecast.daily filter ($.high_temp > 85 or $.low_temp < 45)
+  then $.date
+  else []
+
+fun generateSavingsOpportunities(customerData, benchmarks) = [
+  {
+    category: "Time of Use",
+    potentialSavings: if (customerData.peakUsageRatio > 0.4) 25 + (customerData.peakUsageRatio * 50) else 0,
+    recommendation: "Shift high-energy activities to off-peak hours (9 PM - 6 AM)",
+    difficulty: "Easy"
+  },
+  {
+    category: "HVAC Optimization",
+    potentialSavings: if (customerData.hvacUsage > benchmarks.hvacAvg * 1.2) 35 + ((customerData.hvacUsage - benchmarks.hvacAvg) / benchmarks.hvacAvg * 100) else 0,
+    recommendation: "Install programmable thermostat and improve insulation",
+    difficulty: "Medium"
+  },
+  {
+    category: "Appliance Efficiency",
+    potentialSavings: if (customerData.applianceAge > 10) 20 + (customerData.applianceAge * 2) else 0,
+    recommendation: "Replace old appliances with ENERGY STAR certified models",
+    difficulty: "Hard"
+  },
+  {
+    category: "Solar Installation",
+    potentialSavings: if (customerData.roofSuitability > 0.7 and customerData.avgMonthlyBill > 150) customerData.avgMonthlyBill * 0.8 else 0,
+    recommendation: "Consider rooftop solar installation with net metering",
+    difficulty: "Hard"
+  }
+] filter $.potentialSavings > 0
+
+---
+{
+  customerId: attributes.uriParams.customerId,
+  predictions: {
+    nextMonthUsage: vars.mlResults.predictions.usage.nextMonth + calculateWeatherImpact(avg(vars.weatherForecast.daily.high_temp), vars.historicalData),
+    nextMonthCost: vars.mlResults.predictions.cost.nextMonth * (1 + calculateWeatherImpact(avg(vars.weatherForecast.daily.high_temp), vars.historicalData) * 0.15),
+    peakUsageDays: identifyPeakDays(vars.weatherForecast, vars.mlResults.predictions) as Array<Date>,
+    savingsOpportunities: generateSavingsOpportunities({
+      peakUsageRatio: avg(vars.historicalData filter ($.peak_demand > 0) then $.peak_demand else [0]) / avg(vars.historicalData.kwh_used),
+      hvacUsage: avg(vars.historicalData filter ($.temperature > 80 or $.temperature < 60) then $.kwh_used else vars.historicalData.kwh_used),
+      applianceAge: 8, // This would come from customer profile
+      roofSuitability: 0.85, // This would come from solar analysis service
+      avgMonthlyBill: avg(vars.historicalData.cost) * 30
+    }, {
+      hvacAvg: 450 // Industry benchmark
+    })
+  },
+  insights: {
+    usageTrend: if (vars.mlResults.predictions.usage.trend > 0) "increasing" else "decreasing",
+    efficiencyScore: min([100, max([0, 100 - (vars.mlResults.predictions.usage.nextMonth / vars.mlResults.benchmarks.similar_homes_avg - 1) * 100])]),
+    seasonalPattern: vars.mlResults.patterns.seasonal,
+    recommendations: [
+      "Your usage is projected to " ++ (if (vars.mlResults.predictions.usage.trend > 0) "increase" else "decrease") ++ " by " ++ abs(vars.mlResults.predictions.usage.trend) ++ "% next month",
+      "You rank in the " ++ (100 - min([100, max([0, 100 - (vars.mlResults.predictions.usage.nextMonth / vars.mlResults.benchmarks.similar_homes_avg - 1) * 100])])) ++ "th percentile for energy efficiency in your area"
+    ]
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="HTTP:CONNECTIVITY">
+        <ee:transform doc:name="Analytics Service Unavailable">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Analytics service unavailable",
+  "message": "Unable to generate predictions at this time"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Get Smart Recommendations Flow -->
+  <flow name="get-smart-recommendations">
+    <logger level="DEBUG" doc:name="Logger" message="Generating smart recommendations for customer: #[attributes.uriParams.customerId]" />
+    
+    <!-- Get Customer Usage Patterns -->
+    <db:select doc:name="Get Usage Patterns" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          c.customer_id,
+          c.home_type,
+          c.home_size_sqft,
+          c.occupancy_count,
+          AVG(u.kwh_used) as avg_daily_usage,
+          AVG(u.cost) as avg_daily_cost,
+          MAX(u.peak_demand) as max_peak_demand,
+          COUNT(CASE WHEN EXTRACT(HOUR FROM u.timestamp) BETWEEN 16 AND 20 THEN 1 END) / COUNT(*) as peak_hour_ratio,
+          AVG(CASE WHEN wu.temperature > 85 THEN u.kwh_used END) as hot_weather_usage,
+          AVG(CASE WHEN wu.temperature < 45 THEN u.kwh_used END) as cold_weather_usage
+        FROM customers c
+        JOIN usage_data u ON c.customer_id = u.customer_id
+        LEFT JOIN weather_data wu ON DATE(u.usage_date) = wu.date
+        WHERE c.customer_id = :customerId
+        AND u.usage_date >= TRUNC(SYSDATE) - 90
+        GROUP BY c.customer_id, c.home_type, c.home_size_sqft, c.occupancy_count
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    <set-variable value="#[payload[0]]" doc:name="Store Customer Pattern" variableName="customerPattern" />
+    
+    <!-- Get Benchmarks -->
+    <db:select doc:name="Get Benchmarks" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          AVG(u.kwh_used) as similar_homes_avg,
+          AVG(u.cost) as similar_homes_cost_avg,
+          PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY u.kwh_used) as efficient_quartile_usage,
+          PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY u.kwh_used) as inefficient_quartile_usage
+        FROM usage_data u
+        JOIN customers c ON u.customer_id = c.customer_id
+        WHERE c.home_type = :homeType
+        AND c.home_size_sqft BETWEEN :sizeLower AND :sizeUpper
+        AND u.usage_date >= TRUNC(SYSDATE) - 90
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        homeType: vars.customerPattern.home_type,
+        sizeLower: vars.customerPattern.home_size_sqft * 0.8,
+        sizeUpper: vars.customerPattern.home_size_sqft * 1.2
+      }]]]></db:input-parameters>
+    </db:select>
+    <set-variable value="#[payload[0]]" doc:name="Store Benchmarks" variableName="benchmarks" />
+    
+    <!-- Generate Personalized Recommendations -->
+    <ee:transform doc:name="Generate Smart Recommendations">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+import * from dw::core::Arrays
+
+fun calculateSavings(current, efficient, costPerKwh) = 
+  (current - efficient) * costPerKwh * 30
+
+fun generateTimeOfUseRecommendation(peakRatio, avgUsage, costPerKwh) = 
+  if (peakRatio > 0.3) 
+    {
+      type: "time-of-use",
+      title: "Shift Usage to Off-Peak Hours",
+      description: "You use " ++ (peakRatio * 100) as String ++ "% of your energy during peak hours. Consider running dishwashers, laundry, and charging electric vehicles during off-peak hours (9 PM - 6 AM) to save on energy costs.",
+      potentialSavings: (avgUsage * peakRatio * 0.15 * costPerKwh * 30) as Number,
+      actionRequired: "Adjust appliance usage schedule",
+      priority: if (peakRatio > 0.5) "high" else "medium"
+    }
+  else null
+
+fun generateHVACRecommendation(customerUsage, weatherUsage, benchmarkUsage, costPerKwh) = 
+  if (weatherUsage > benchmarkUsage * 1.3)
+    {
+      type: "hvac-optimization",
+      title: "Optimize Heating & Cooling",
+      description: "Your HVAC system uses " ++ ((weatherUsage / benchmarkUsage - 1) * 100) as String ++ "% more energy than similar homes. Consider programmable thermostats, improved insulation, or HVAC maintenance.",
+      potentialSavings: calculateSavings(weatherUsage, benchmarkUsage, costPerKwh),
+      actionRequired: "Schedule HVAC assessment and upgrade insulation",
+      priority: if (weatherUsage > benchmarkUsage * 1.5) "high" else "medium"
+    }
+  else null
+
+fun generateEfficiencyRecommendation(customerUsage, efficientUsage, costPerKwh) = 
+  if (customerUsage > efficientUsage * 1.2)
+    {
+      type: "appliance-efficiency",
+      title: "Upgrade to Energy-Efficient Appliances",
+      description: "Your overall energy usage is " ++ ((customerUsage / efficientUsage - 1) * 100) as String ++ "% higher than the most efficient homes in your area. Consider upgrading to ENERGY STAR appliances.",
+      potentialSavings: calculateSavings(customerUsage, efficientUsage, costPerKwh),
+      actionRequired: "Research and replace inefficient appliances",
+      priority: if (customerUsage > efficientUsage * 1.5) "high" else "low"
+    }
+  else null
+
+fun generateSolarRecommendation(homeType, avgMonthlyBill, homeSize) = 
+  if (avgMonthlyBill > 120 and homeSize > 1500 and homeType != "apartment")
+    {
+      type: "solar-installation",
+      title: "Consider Solar Panel Installation",
+      description: "Based on your energy usage patterns and home characteristics, solar panels could significantly reduce your electricity bills. You could potentially save " ++ (avgMonthlyBill * 0.7) as String ++ " per month.",
+      potentialSavings: avgMonthlyBill * 0.7 * 12,
+      actionRequired: "Get solar assessment and quotes",
+      priority: "medium"
+    }
+  else null
+
+fun generateSmartHomeRecommendation(peakUsage, avgUsage) = 
+  if (peakUsage > avgUsage * 2)
+    {
+      type: "smart-home",
+      title: "Install Smart Home Energy Management",
+      description: "Your peak demand is significantly higher than your average usage. Smart home devices can automatically manage appliances and reduce peak demand charges.",
+      potentialSavings: peakUsage * 0.2 * 15 * 12, // Assuming peak demand charges
+      actionRequired: "Install smart thermostats, smart water heater controller, and load management system",
+      priority: "medium"
+    }
+  else null
+
+---
+{
+  customerId: attributes.uriParams.customerId,
+  recommendations: [
+    generateTimeOfUseRecommendation(
+      vars.customerPattern.peak_hour_ratio,
+      vars.customerPattern.avg_daily_usage,
+      vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage
+    ),
+    generateHVACRecommendation(
+      vars.customerPattern.avg_daily_usage,
+      (vars.customerPattern.hot_weather_usage + vars.customerPattern.cold_weather_usage) / 2,
+      vars.benchmarks.similar_homes_avg,
+      vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage
+    ),
+    generateEfficiencyRecommendation(
+      vars.customerPattern.avg_daily_usage,
+      vars.benchmarks.efficient_quartile_usage,
+      vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage
+    ),
+    generateSolarRecommendation(
+      vars.customerPattern.home_type,
+      vars.customerPattern.avg_daily_cost * 30,
+      vars.customerPattern.home_size_sqft
+    ),
+    generateSmartHomeRecommendation(
+      vars.customerPattern.max_peak_demand,
+      vars.customerPattern.avg_daily_usage
+    )
+  ] filter ($ != null),
+  
+  insights: {
+    efficiencyRanking: if (vars.customerPattern.avg_daily_usage <= vars.benchmarks.efficient_quartile_usage) "top_25_percent"
+                      else if (vars.customerPattern.avg_daily_usage <= vars.benchmarks.similar_homes_avg) "above_average"
+                      else if (vars.customerPattern.avg_daily_usage <= vars.benchmarks.inefficient_quartile_usage) "below_average"
+                      else "bottom_25_percent",
+    totalPotentialSavings: sum([
+      generateTimeOfUseRecommendation(vars.customerPattern.peak_hour_ratio, vars.customerPattern.avg_daily_usage, vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage).potentialSavings,
+      generateHVACRecommendation(vars.customerPattern.avg_daily_usage, (vars.customerPattern.hot_weather_usage + vars.customerPattern.cold_weather_usage) / 2, vars.benchmarks.similar_homes_avg, vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage).potentialSavings,
+      generateEfficiencyRecommendation(vars.customerPattern.avg_daily_usage, vars.benchmarks.efficient_quartile_usage, vars.customerPattern.avg_daily_cost / vars.customerPattern.avg_daily_usage).potentialSavings
+    ] filter ($ != null)),
+    carbonFootprintReduction: (vars.customerPattern.avg_daily_usage - vars.benchmarks.efficient_quartile_usage) * 365 * 0.0004 // kg CO2 per kWh
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Get Energy Tips Flow -->
+  <flow name="get-energy-tips">
+    <logger level="DEBUG" doc:name="Logger" message="Getting energy tips for customer: #[vars.customerId], season: #[vars.season]" />
+    
+    <choice doc:name="Route by Season">
+      <when expression="#[vars.season != null]">
+        <flow-ref doc:name="Get Seasonal Tips" name="get-seasonal-energy-tips" />
+      </when>
+      <otherwise>
+        <flow-ref doc:name="Get General Tips" name="get-general-energy-tips" />
+      </otherwise>
+    </choice>
+  </flow>
+
+  <!-- Get Seasonal Energy Tips Sub-flow -->
+  <flow name="get-seasonal-energy-tips">
+    <ee:transform doc:name="Generate Seasonal Tips">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+
+fun getSeasonalTips(season) = 
+  season match {
+    case "summer" -> [
+      {
+        tip: "Set your air conditioner to 78°F when home and 85°F when away to save up to 10% on cooling costs",
+        category: "HVAC",
+        difficulty: "easy",
+        potentialSavings: "10-15%"
+      },
+      {
+        tip: "Use ceiling fans to circulate air and feel 4°F cooler, allowing you to raise the thermostat setting",
+        category: "HVAC",
+        difficulty: "easy", 
+        potentialSavings: "5-8%"
+      },
+      {
+        tip: "Close curtains and blinds during the day to block out heat from the sun",
+        category: "Cooling",
+        difficulty: "easy",
+        potentialSavings: "3-5%"
+      },
+      {
+        tip: "Schedule high-energy activities like laundry and dishwashing for early morning or late evening",
+        category: "Scheduling",
+        difficulty: "easy",
+        potentialSavings: "8-12%"
+      }
+    ]
+    case "winter" -> [
+      {
+        tip: "Lower your thermostat to 68°F during the day and 60-65°F at night to save on heating costs",
+        category: "HVAC",
+        difficulty: "easy",
+        potentialSavings: "10-15%"
+      },
+      {
+        tip: "Seal air leaks around windows and doors with weather stripping or caulk",
+        category: "Insulation",
+        difficulty: "medium",
+        potentialSavings: "15-20%"
+      },
+      {
+        tip: "Use a programmable thermostat to automatically adjust temperature when you're away",
+        category: "HVAC",
+        difficulty: "medium",
+        potentialSavings: "8-12%"
+      },
+      {
+        tip: "Open curtains on sunny days to let natural heat in, and close them at night for insulation",
+        category: "Heating",
+        difficulty: "easy",
+        potentialSavings: "5-8%"
+      }
+    ]
+    case "spring" -> [
+      {
+        tip: "Schedule HVAC maintenance to ensure efficient operation for the coming summer",
+        category: "HVAC",
+        difficulty: "easy",
+        potentialSavings: "5-10%"
+      },
+      {
+        tip: "Clean or replace air filters for better airflow and efficiency",
+        category: "HVAC", 
+        difficulty: "easy",
+        potentialSavings: "5-8%"
+      },
+      {
+        tip: "Take advantage of mild weather to air dry clothes instead of using the dryer",
+        category: "Appliances",
+        difficulty: "easy",
+        potentialSavings: "8-15%"
+      }
+    ]
+    case "fall" -> [
+      {
+        tip: "Prepare for winter by sealing air leaks and adding insulation",
+        category: "Insulation",
+        difficulty: "medium", 
+        potentialSavings: "15-25%"
+      },
+      {
+        tip: "Service your heating system before cold weather arrives",
+        category: "HVAC",
+        difficulty: "easy",
+        potentialSavings: "8-12%"
+      },
+      {
+        tip: "Use natural sunlight for heating by opening south-facing curtains during the day",
+        category: "Heating",
+        difficulty: "easy",
+        potentialSavings: "3-5%"
+      }
+    ]
+    else -> []
+  }
+
+---
+getSeasonalTips(vars.season default "general")]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Get General Energy Tips Sub-flow -->
+  <flow name="get-general-energy-tips">
+    <ee:transform doc:name="Generate General Tips">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+[
+  {
+    tip: "Switch to LED light bulbs - they use 75% less energy and last 25 times longer than incandescent bulbs",
+    category: "Lighting",
+    difficulty: "easy",
+    potentialSavings: "5-10%"
+  },
+  {
+    tip: "Unplug electronics and chargers when not in use to eliminate phantom loads",
+    category: "Electronics",
+    difficulty: "easy", 
+    potentialSavings: "3-8%"
+  },
+  {
+    tip: "Use cold water for washing clothes - 90% of energy used by washing machines goes to heating water",
+    category: "Appliances",
+    difficulty: "easy",
+    potentialSavings: "10-15%"
+  },
+  {
+    tip: "Install a programmable or smart thermostat to optimize heating and cooling schedules",
+    category: "HVAC",
+    difficulty: "medium",
+    potentialSavings: "10-20%"
+  },
+  {
+    tip: "Air dry clothes instead of using the dryer when weather permits",
+    category: "Appliances", 
+    difficulty: "easy",
+    potentialSavings: "8-15%"
+  },
+  {
+    tip: "Keep your refrigerator between 35-38°F and freezer at 0-5°F for optimal efficiency",
+    category: "Appliances",
+    difficulty: "easy",
+    potentialSavings: "3-5%"
+  },
+  {
+    tip: "Use power strips to easily turn off multiple electronics at once",
+    category: "Electronics",
+    difficulty: "easy",
+    potentialSavings: "5-8%"
+  },
+  {
+    tip: "Take shorter showers and consider installing low-flow showerheads",
+    category: "Water Heating",
+    difficulty: "easy",
+    potentialSavings: "8-12%"
+  }
+]]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+</mule>

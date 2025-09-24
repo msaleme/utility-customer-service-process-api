@@ -1,0 +1,418 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:validation="http://www.mulesoft.org/schema/mule/validation"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+        http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+
+  <!-- Oracle Database Configuration -->
+  <db:config name="oracle-billing-config" doc:name="Database Config">
+    <db:oracle-connection host="${oracle.billing.host}" 
+                           port="${oracle.billing.port}" 
+                           serviceName="${oracle.billing.serviceName}"
+                           user="${oracle.billing.username}" 
+                           password="${oracle.billing.password}" />
+  </db:config>
+
+  <!-- Get Customer Profile Flow -->
+  <flow name="get-customer-profile">
+    <logger level="DEBUG" doc:name="Logger" message="Fetching customer profile for: #[attributes.uriParams.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Customer ID" value="#[attributes.uriParams.customerId]" message="Customer ID is required" />
+    
+    <db:select doc:name="Get Customer Data" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          c.customer_id,
+          c.account_number,
+          c.first_name,
+          c.last_name,
+          c.email,
+          c.phone,
+          c.service_street,
+          c.service_city,
+          c.service_state,
+          c.service_zip,
+          c.service_latitude,
+          c.service_longitude,
+          ep.avg_monthly_usage,
+          ep.peak_usage_hours,
+          ep.seasonal_pattern
+        FROM customers c
+        LEFT JOIN energy_profiles ep ON c.customer_id = ep.customer_id
+        WHERE c.customer_id = :customerId
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    
+    <choice doc:name="Check if customer exists">
+      <when expression="#[sizeOf(payload) == 0]">
+        <ee:transform doc:name="Customer Not Found Response">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Customer not found",
+  "message": "Customer with ID " ++ attributes.uriParams.customerId ++ " does not exist"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </when>
+      <otherwise>
+        <ee:transform doc:name="Transform Customer Data">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  customerId: payload[0].customer_id,
+  accountNumber: payload[0].account_number,
+  firstName: payload[0].first_name,
+  lastName: payload[0].last_name,
+  email: payload[0].email,
+  phone: payload[0].phone,
+  serviceAddress: {
+    street: payload[0].service_street,
+    city: payload[0].service_city,
+    state: payload[0].service_state,
+    zipCode: payload[0].service_zip,
+    coordinates: {
+      latitude: payload[0].service_latitude,
+      longitude: payload[0].service_longitude
+    }
+  },
+  energyProfile: {
+    averageMonthlyUsage: payload[0].avg_monthly_usage,
+    peakUsageHours: payload[0].peak_usage_hours splitBy ",",
+    seasonalPattern: payload[0].seasonal_pattern
+  }
+}]]></ee:set-payload>
+          </ee:message>
+        </ee:transform>
+      </otherwise>
+    </choice>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="DB:CONNECTIVITY">
+        <ee:transform doc:name="Database Connection Error">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Database connection error",
+  "message": "Unable to connect to billing system"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Get Usage Data Flow -->
+  <flow name="get-usage-data">
+    <logger level="DEBUG" doc:name="Logger" message="Fetching usage data for customer: #[attributes.uriParams.customerId], period: #[vars.period]" />
+    
+    <ee:transform doc:name="Calculate Date Range">
+      <ee:variables>
+        <ee:set-variable variableName="dateRange"><![CDATA[%dw 2.0
+output application/java
+---
+{
+  startDate: (vars.period match {
+    case "current" -> now() - |P1M|
+    case "last30days" -> now() - |P30D|
+    case "last90days" -> now() - |P90D|
+    case "lastyear" -> now() - |P1Y|
+    else -> now() - |P1M|
+  }) as String {format: "yyyy-MM-dd"},
+  endDate: now() as String {format: "yyyy-MM-dd"}
+}]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+    
+    <db:select doc:name="Get Usage Data" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          u.customer_id,
+          u.usage_date,
+          u.kwh_used,
+          u.peak_demand,
+          u.off_peak_usage,
+          u.cost_per_kwh,
+          AVG(u.kwh_used) OVER (PARTITION BY u.customer_id) as daily_average,
+          SUM(u.kwh_used) OVER (PARTITION BY u.customer_id) as total_kwh
+        FROM usage_data u
+        WHERE u.customer_id = :customerId 
+        AND u.usage_date BETWEEN TO_DATE(:startDate, 'YYYY-MM-DD') AND TO_DATE(:endDate, 'YYYY-MM-DD')
+        ORDER BY u.usage_date DESC
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        customerId: attributes.uriParams.customerId,
+        startDate: vars.dateRange.startDate,
+        endDate: vars.dateRange.endDate
+      }]]]></db:input-parameters>
+    </db:select>
+    
+    <choice doc:name="Check if data exists">
+      <when expression="#[vars.includeComparison and sizeOf(payload) > 0]">
+        <db:select doc:name="Get Comparison Data" config-ref="oracle-billing-config">
+          <db:sql><![CDATA[
+            SELECT 
+              AVG(neighborhood.kwh_used) as neighborhood_avg,
+              AVG(similar.kwh_used) as similar_homes_avg,
+              prev.total_kwh as previous_period_total
+            FROM usage_data current
+            LEFT JOIN usage_data neighborhood ON ST_DWithin(current.coordinates, neighborhood.coordinates, 1000)
+            LEFT JOIN usage_data similar ON similar.home_type = current.home_type AND similar.home_size_range = current.home_size_range
+            LEFT JOIN (
+              SELECT customer_id, SUM(kwh_used) as total_kwh
+              FROM usage_data 
+              WHERE customer_id = :customerId 
+              AND usage_date BETWEEN TO_DATE(:prevStartDate, 'YYYY-MM-DD') AND TO_DATE(:prevEndDate, 'YYYY-MM-DD')
+              GROUP BY customer_id
+            ) prev ON prev.customer_id = current.customer_id
+            WHERE current.customer_id = :customerId
+            AND current.usage_date BETWEEN TO_DATE(:startDate, 'YYYY-MM-DD') AND TO_DATE(:endDate, 'YYYY-MM-DD')
+          ]]></db:sql>
+          <db:input-parameters><![CDATA[#[{
+            customerId: attributes.uriParams.customerId,
+            startDate: vars.dateRange.startDate,
+            endDate: vars.dateRange.endDate,
+            prevStartDate: (vars.dateRange.startDate as Date - |P1M|) as String {format: "yyyy-MM-dd"},
+            prevEndDate: (vars.dateRange.endDate as Date - |P1M|) as String {format: "yyyy-MM-dd"}
+          }]]]></db:input-parameters>
+        </db:select>
+        <set-variable value="#[payload]" doc:name="Store Comparison Data" variableName="comparisonData" />
+      </when>
+      <otherwise>
+        <set-variable value="#[[]]" doc:name="Empty Comparison Data" variableName="comparisonData" />
+      </otherwise>
+    </choice>
+    
+    <ee:transform doc:name="Transform Usage Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  customerId: attributes.uriParams.customerId,
+  period: {
+    startDate: vars.dateRange.startDate as Date,
+    endDate: vars.dateRange.endDate as Date
+  },
+  usage: {
+    totalKwh: payload[0].total_kwh default 0,
+    dailyAverage: payload[0].daily_average default 0,
+    peakDemand: max(payload.peak_demand default [0]),
+    offPeakUsage: sum(payload.off_peak_usage default [0]),
+    costPerKwh: avg(payload.cost_per_kwh default [0])
+  },
+  (comparison: {
+    previousPeriod: vars.comparisonData[0].previous_period_total default 0,
+    neighborhoodAverage: vars.comparisonData[0].neighborhood_avg default 0,
+    similarHomes: vars.comparisonData[0].similar_homes_avg default 0
+  }) if vars.includeComparison
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    
+    <error-handler>
+      <on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" type="DB:CONNECTIVITY">
+        <ee:transform doc:name="Database Error Response">
+          <ee:message>
+            <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Database error",
+  "message": "Unable to retrieve usage data"
+}]]></ee:set-payload>
+          </ee:message>
+          <ee:variables>
+            <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+          </ee:variables>
+        </ee:transform>
+      </on-error-propagate>
+    </error-handler>
+  </flow>
+
+  <!-- Get Hourly Usage Data Flow -->
+  <flow name="get-hourly-usage-data">
+    <logger level="DEBUG" doc:name="Logger" message="Fetching hourly usage data for customer: #[attributes.uriParams.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Start Date" value="#[vars.startDate]" message="Start date is required" />
+    <validation:is-not-empty-string doc:name="Validate End Date" value="#[vars.endDate]" message="End date is required" />
+    
+    <db:select doc:name="Get Hourly Usage" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          hu.timestamp,
+          hu.kwh_used as usage,
+          hu.cost,
+          wu.temperature
+        FROM hourly_usage hu
+        LEFT JOIN weather_data wu ON DATE(hu.timestamp) = wu.date
+        WHERE hu.customer_id = :customerId 
+        AND hu.timestamp BETWEEN TO_TIMESTAMP(:startDate, 'YYYY-MM-DD') AND TO_TIMESTAMP(:endDate, 'YYYY-MM-DD')
+        ORDER BY hu.timestamp
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        customerId: attributes.uriParams.customerId,
+        startDate: vars.startDate,
+        endDate: vars.endDate
+      }]]]></db:input-parameters>
+    </db:select>
+    
+    <ee:transform doc:name="Transform Hourly Data">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload map {
+  timestamp: $.timestamp,
+  usage: $.usage,
+  cost: $.cost,
+  (temperature: $.temperature) if $.temperature != null
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Get Billing Information Flow -->
+  <flow name="get-billing-information">
+    <logger level="DEBUG" doc:name="Logger" message="Fetching billing information for customer: #[attributes.uriParams.customerId]" />
+    
+    <db:select doc:name="Get Current Bill" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          b.bill_id,
+          b.amount,
+          b.due_date,
+          b.period_start,
+          b.period_end,
+          b.status,
+          b.energy_charges,
+          b.delivery_charges,
+          b.taxes,
+          b.fees
+        FROM bills b
+        WHERE b.customer_id = :customerId
+        AND b.status IN ('CURRENT', 'OVERDUE')
+        ORDER BY b.due_date DESC
+        FETCH FIRST 1 ROWS ONLY
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    <set-variable value="#[payload]" doc:name="Store Current Bill" variableName="currentBill" />
+    
+    <db:select doc:name="Get Payment History" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        SELECT 
+          p.bill_id,
+          p.amount,
+          p.payment_date,
+          p.payment_method
+        FROM payments p
+        WHERE p.customer_id = :customerId
+        ORDER BY p.payment_date DESC
+        FETCH FIRST 12 ROWS ONLY
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{customerId: attributes.uriParams.customerId}]]]></db:input-parameters>
+    </db:select>
+    
+    <ee:transform doc:name="Transform Billing Data">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  customerId: attributes.uriParams.customerId,
+  (currentBill: {
+    billId: vars.currentBill[0].bill_id,
+    amount: vars.currentBill[0].amount,
+    dueDate: vars.currentBill[0].due_date as Date,
+    periodStart: vars.currentBill[0].period_start as Date,
+    periodEnd: vars.currentBill[0].period_end as Date,
+    status: vars.currentBill[0].status,
+    breakdown: {
+      energyCharges: vars.currentBill[0].energy_charges,
+      deliveryCharges: vars.currentBill[0].delivery_charges,
+      taxes: vars.currentBill[0].taxes,
+      fees: vars.currentBill[0].fees
+    }
+  }) if sizeOf(vars.currentBill) > 0,
+  paymentHistory: payload map {
+    billId: $.bill_id,
+    amount: $.amount,
+    paymentDate: $.payment_date as Date,
+    method: $.payment_method
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+  <!-- Setup Payment Plan Flow -->
+  <flow name="setup-payment-plan">
+    <logger level="DEBUG" doc:name="Logger" message="Setting up payment plan for customer: #[attributes.uriParams.customerId]" />
+    
+    <validation:is-not-empty-string doc:name="Validate Plan Type" value="#[payload.planType]" message="Plan type is required" />
+    <validation:is-number doc:name="Validate Number of Payments" value="#[payload.numberOfPayments]" message="Number of payments must be a number" />
+    
+    <ee:transform doc:name="Generate Plan ID">
+      <ee:variables>
+        <ee:set-variable variableName="planId"><![CDATA[%dw 2.0
+output application/java
+---
+"PP" ++ (randomInt(99999) + 10000)]]></ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+    
+    <db:insert doc:name="Insert Payment Plan" config-ref="oracle-billing-config">
+      <db:sql><![CDATA[
+        INSERT INTO payment_plans (
+          plan_id, customer_id, plan_type, number_of_payments, 
+          preferred_date, created_date, status
+        ) VALUES (
+          :planId, :customerId, :planType, :numberOfPayments, 
+          :preferredDate, SYSDATE, 'ACTIVE'
+        )
+      ]]></db:sql>
+      <db:input-parameters><![CDATA[#[{
+        planId: vars.planId,
+        customerId: attributes.uriParams.customerId,
+        planType: payload.planType,
+        numberOfPayments: payload.numberOfPayments,
+        preferredDate: payload.preferredDate
+      }]]]></db:input-parameters>
+    </db:insert>
+    
+    <ee:transform doc:name="Payment Plan Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  message: "Payment plan created successfully",
+  planId: vars.planId,
+  customerId: attributes.uriParams.customerId,
+  setupDate: now() as String {format: "yyyy-MM-dd"}
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+
+</mule>

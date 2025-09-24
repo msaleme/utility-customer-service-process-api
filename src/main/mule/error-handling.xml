@@ -1,0 +1,401 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" 
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+  <!-- Global Error Handler -->
+  <error-handler name="global-error-handler" doc:name="Global Error Handler">
+    
+    <!-- Validation Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Validation Error" type="VALIDATION:INVALID_VALUE">
+      <logger level="WARN" doc:name="Log Validation Error" message="Validation error: #[error.description]" />
+      <ee:transform doc:name="Validation Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Validation Error",
+  "message": error.description,
+  "errorCode": "VALIDATION_001",
+  "timestamp": now() as String,
+  "path": attributes.requestPath default ""
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">400</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- Database Connection Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Database Error" type="DB:CONNECTIVITY">
+      <logger level="ERROR" doc:name="Log Database Error" message="Database connectivity error: #[error.description]" />
+      <ee:transform doc:name="Database Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Service Temporarily Unavailable",
+  "message": "We're experiencing technical difficulties with our billing system. Please try again later.",
+  "errorCode": "DB_001",
+  "timestamp": now() as String,
+  "retryAfter": "300" // 5 minutes
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- Database Query Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Database Query Error" type="DB:QUERY_EXECUTION">
+      <logger level="ERROR" doc:name="Log Query Error" message="Database query error: #[error.description]" />
+      <ee:transform doc:name="Query Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Data Processing Error",
+  "message": "Unable to process your request. Please check your input and try again.",
+  "errorCode": "DB_002",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">500</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- HTTP Connectivity Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="HTTP Connection Error" type="HTTP:CONNECTIVITY">
+      <logger level="ERROR" doc:name="Log HTTP Error" message="External service connectivity error: #[error.description]" />
+      <ee:transform doc:name="HTTP Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "External Service Unavailable",
+  "message": "One of our external services is temporarily unavailable. Some features may be limited.",
+  "errorCode": "HTTP_001",
+  "timestamp": now() as String,
+  "retryAfter": "60"
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- HTTP Timeout Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="HTTP Timeout Error" type="HTTP:TIMEOUT">
+      <logger level="WARN" doc:name="Log Timeout Error" message="Request timeout: #[error.description]" />
+      <ee:transform doc:name="Timeout Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Request Timeout",
+  "message": "Your request is taking longer than expected. Please try again.",
+  "errorCode": "HTTP_002",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">408</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- HTTP Client Errors (4xx) -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="HTTP Client Error" type="HTTP:BAD_REQUEST, HTTP:UNAUTHORIZED, HTTP:FORBIDDEN, HTTP:NOT_FOUND">
+      <logger level="WARN" doc:name="Log Client Error" message="HTTP client error: #[error.description]" />
+      <choice doc:name="Route by Error Type">
+        <when expression="#[error.errorType.identifier == 'UNAUTHORIZED']">
+          <ee:transform doc:name="Unauthorized Response">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Authentication Required",
+  "message": "Please provide valid authentication credentials.",
+  "errorCode": "AUTH_001",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+              <ee:set-variable variableName="httpStatus">401</ee:set-variable>
+            </ee:variables>
+          </ee:transform>
+        </when>
+        <when expression="#[error.errorType.identifier == 'FORBIDDEN']">
+          <ee:transform doc:name="Forbidden Response">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Access Denied",
+  "message": "You don't have permission to access this resource.",
+  "errorCode": "AUTH_002",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+              <ee:set-variable variableName="httpStatus">403</ee:set-variable>
+            </ee:variables>
+          </ee:transform>
+        </when>
+        <when expression="#[error.errorType.identifier == 'NOT_FOUND']">
+          <ee:transform doc:name="Not Found Response">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Resource Not Found",
+  "message": "The requested resource was not found.",
+  "errorCode": "HTTP_003",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+              <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+            </ee:variables>
+          </ee:transform>
+        </when>
+        <otherwise>
+          <ee:transform doc:name="Bad Request Response">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Bad Request",
+  "message": "The request could not be processed. Please check your input.",
+  "errorCode": "HTTP_004",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+            </ee:message>
+            <ee:variables>
+              <ee:set-variable variableName="httpStatus">400</ee:set-variable>
+            </ee:variables>
+          </ee:transform>
+        </otherwise>
+      </choice>
+    </on-error-propagate>
+
+    <!-- Transformation Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Transformation Error" type="EXPRESSION, MULE:EXPRESSION">
+      <logger level="ERROR" doc:name="Log Transformation Error" message="Data transformation error: #[error.description]" />
+      <ee:transform doc:name="Transformation Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Data Processing Error",
+  "message": "Unable to process the data format. Please contact support if this persists.",
+  "errorCode": "TRANSFORM_001",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">500</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- Security Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Security Error" type="SECURITY:*">
+      <logger level="ERROR" doc:name="Log Security Error" message="Security error: #[error.description]" />
+      <ee:transform doc:name="Security Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Security Violation",
+  "message": "A security policy has been violated. This incident will be reported.",
+  "errorCode": "SECURITY_001",
+  "timestamp": now() as String
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">403</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- Rate Limiting Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Rate Limit Error" type="THROTTLING:RATE_LIMIT_EXCEEDED">
+      <logger level="WARN" doc:name="Log Rate Limit Error" message="Rate limit exceeded for request" />
+      <ee:transform doc:name="Rate Limit Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Rate Limit Exceeded",
+  "message": "You have exceeded the maximum number of requests. Please try again later.",
+  "errorCode": "RATE_001",
+  "timestamp": now() as String,
+  "retryAfter": "60"
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">429</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+
+    <!-- Generic/Unknown Errors -->
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Generic Error" type="ANY">
+      <logger level="ERROR" doc:name="Log Generic Error" message="Unexpected error: #[error.description]" />
+      <ee:transform doc:name="Generic Error Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Internal Server Error",
+  "message": "An unexpected error occurred. Please try again later or contact support.",
+  "errorCode": "GENERIC_001",
+  "timestamp": now() as String,
+  "supportReference": uuid()
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">500</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+  </error-handler>
+
+  <!-- Circuit Breaker Error Handler -->
+  <error-handler name="circuit-breaker-error-handler" doc:name="Circuit Breaker Error Handler">
+    <on-error-propagate enableNotifications="true" logException="true" doc:name="Circuit Open" type="CIRCUIT_BREAKER:OPEN">
+      <logger level="WARN" doc:name="Circuit Breaker Open" message="Circuit breaker is open for external service" />
+      <ee:transform doc:name="Circuit Breaker Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "error": "Service Temporarily Unavailable",
+  "message": "The external service is temporarily unavailable. We're working to restore it.",
+  "errorCode": "CIRCUIT_001",
+  "timestamp": now() as String,
+  "retryAfter": "300"
+}]]></ee:set-payload>
+        </ee:message>
+        <ee:variables>
+          <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+        </ee:variables>
+      </ee:transform>
+    </on-error-propagate>
+  </error-handler>
+
+  <!-- Health Check Error Responses -->
+  <sub-flow name="health-check-error-response" doc:name="Health Check Error Response">
+    <ee:transform doc:name="Health Check Failure">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "status": "DOWN",
+  "timestamp": now() as String,
+  "services": {
+    "oracle-billing": {
+      "status": if (vars.oracleHealthy default false) "UP" else "DOWN",
+      "lastChecked": now() as String
+    },
+    "outage-management": {
+      "status": if (vars.outageHealthy default false) "UP" else "DOWN", 
+      "lastChecked": now() as String
+    },
+    "analytics-service": {
+      "status": if (vars.analyticsHealthy default false) "UP" else "DOWN",
+      "lastChecked": now() as String
+    },
+    "agentforce": {
+      "status": if (vars.agentforceHealthy default false) "UP" else "DOWN",
+      "lastChecked": now() as String
+    }
+  },
+  "version": "${app.version}",
+  "environment": "${mule.env}"
+}]]></ee:set-payload>
+      </ee:message>
+      <ee:variables>
+        <ee:set-variable variableName="httpStatus">503</ee:set-variable>
+      </ee:variables>
+    </ee:transform>
+  </sub-flow>
+
+  <!-- Graceful Degradation Responses -->
+  <sub-flow name="analytics-unavailable-response" doc:name="Analytics Unavailable Response">
+    <ee:transform doc:name="Limited Analytics Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  customerId: vars.customerId,
+  predictions: {
+    nextMonthUsage: "unavailable",
+    nextMonthCost: "unavailable",
+    peakUsageDays: [],
+    savingsOpportunities: []
+  },
+  insights: {
+    message: "Advanced analytics are temporarily unavailable. Basic usage data is still accessible.",
+    alternativeActions: [
+      "View current usage data",
+      "Check billing information", 
+      "Get general energy saving tips"
+    ]
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </sub-flow>
+
+  <sub-flow name="outage-service-fallback" doc:name="Outage Service Fallback">
+    <ee:transform doc:name="Fallback Outage Response">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "message": "Outage information is temporarily unavailable. Please check our website or call customer service for current outage status.",
+  "alternativeContacts": [
+    {
+      "method": "phone",
+      "number": "1-800-UTILITY",
+      "hours": "24/7"
+    },
+    {
+      "method": "website", 
+      "url": "https://www.utility.com/outages",
+      "description": "Live outage map"
+    }
+  ]
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </sub-flow>
+
+</mule>

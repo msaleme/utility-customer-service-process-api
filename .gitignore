@@ -1,0 +1,58 @@
+# Mule Application Files
+target/
+.mule/
+*.mlog
+*.log
+
+# IDE Files
+.idea/
+*.iml
+.vscode/
+.metadata/
+.project
+.settings/
+.classpath
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Configuration Files (containing sensitive data)
+src/main/resources/config.properties
+src/main/resources/application-*.yaml
+src/main/resources/secure/
+
+# Maven
+dependency-reduced-pom.xml
+
+# Backup files
+*.bak
+*.tmp
+*~
+
+# Runtime Files
+.mule_ee_license
+runtime-manager.properties
+
+# Test Files
+src/test/resources/test-config.properties
+
+# Logs
+logs/
+*.log.*
+*.out
+
+# Database
+*.db
+*.sqlite
+
+# Environment specific files
+.env
+.env.local
+.env.*.local
+
+# CloudHub deployment files
+cloudhub-deployment.properties
+
+# Exchange credentials
+exchange-credentials.json

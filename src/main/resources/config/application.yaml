@@ -1,0 +1,72 @@
+http:
+  listener:
+    config:
+      host: "0.0.0.0"
+      port: 8081
+      protocol: "HTTP"
+
+api:
+  version: "v1"
+  title: "Utility Customer Service Process API"
+  
+# Oracle Database Configuration
+oracle:
+  billing:
+    host: "${oracle.billing.host}"
+    port: "${oracle.billing.port:1521}"
+    serviceName: "${oracle.billing.serviceName}"
+    username: "${oracle.billing.username}"
+    password: "${oracle.billing.password}"
+    
+# Outage Management System Configuration
+outage:
+  management:
+    baseUrl: "${outage.management.baseUrl}"
+    apiKey: "${outage.management.apiKey}"
+    timeout: "${outage.management.timeout:30000}"
+    
+# AgentForce Configuration
+agentforce:
+  endpoint: "${agentforce.endpoint}"
+  apiKey: "${agentforce.apiKey}"
+  model: "${agentforce.model:gpt-4}"
+  
+# Analytics and ML Configuration
+analytics:
+  predictionService:
+    baseUrl: "${analytics.prediction.baseUrl}"
+    apiKey: "${analytics.prediction.apiKey}"
+  
+# Notification Configuration
+notifications:
+  email:
+    provider: "${notifications.email.provider}"
+    apiKey: "${notifications.email.apiKey}"
+  sms:
+    provider: "${notifications.sms.provider}"
+    apiKey: "${notifications.sms.apiKey}"
+    
+# Cache Configuration
+cache:
+  ttl:
+    customerData: "${cache.ttl.customer:300}" # 5 minutes
+    usageData: "${cache.ttl.usage:60}" # 1 minute  
+    outageData: "${cache.ttl.outage:30}" # 30 seconds
+    billingData: "${cache.ttl.billing:300}" # 5 minutes
+    
+# Rate Limiting
+rateLimiting:
+  enabled: "${rate.limiting.enabled:true}"
+  maxRequestsPerMinute: "${rate.limiting.max:100}"
+  
+# Monitoring and Logging
+monitoring:
+  metrics:
+    enabled: "${monitoring.metrics.enabled:true}"
+  tracing:
+    enabled: "${monitoring.tracing.enabled:true}"
+    
+logging:
+  level:
+    root: "${logging.level:INFO}"
+    utility-customer-service: "${logging.level.app:DEBUG}"
