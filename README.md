@@ -21,14 +21,28 @@ Utility customer interactions often span CIS and billing, usage and meter data, 
 | Insights | Forecast or recommendation interfaces |
 | Agent experience | A governed conversational query boundary |
 
+## What's actually included
+
+This repository contains a real MuleSoft application skeleton, not just documentation. Present in the tree:
+
+- **Mule flows** (`src/main/mule/`): API entry flow (`utility-service-api.xml`), source-system adapters for Oracle billing, outage management, and predictive analytics, an Agentforce integration flow, plus `app.xml` and `global.xml` connector configuration.
+- **Error handling and resilience** (`error-handling.xml`): a global error handler with typed responses (validation, DB, HTTP, timeout, security, rate-limit), a circuit-breaker error handler, and graceful-degradation sub-flows for analytics/outage fallback and health-check failure.
+- **API contract** (`src/main/resources/api/utility-customer-service-api.raml`): RAML specification for the process-layer endpoints.
+- **Database schema** (`database-schema.sql`): example relational schema.
+- **Configuration examples** (`config.properties.example`, `config/application.yaml`, `log4j2.xml`) and Maven build (`pom.xml`, `mule-artifact.json`).
+- **Project scaffolding**: CI workflow (`.github/workflows/ci.yml`), `docs/DEPLOYMENT.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and issue templates.
+
+Connector credentials, endpoints, and data in the examples are placeholders for evaluation only — see the project status note above.
+
 ## Architecture principles
 
 - experience channels call a stable process API rather than source systems;
 - source adapters isolate CIS, billing, OMS, analytics and notification providers;
 - canonical models reduce channel-specific transformations;
-- correlation IDs connect customer requests, tool calls and downstream activity;
 - resilience patterns contain failures and expose partial availability explicitly;
 - AI-generated explanations remain grounded in retrieved customer and operational data.
+
+> **Design intent (not yet implemented):** correlation-ID propagation to connect customer requests, tool calls and downstream activity is a stated goal for a production build, but it is **not** implemented in this reference — the current log configuration uses a standard pattern without a propagated correlation ID.
 
 ## Customer and AI governance
 
